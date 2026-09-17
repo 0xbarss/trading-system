@@ -41,7 +41,7 @@ A high-performance algorithmic trading system written entirely in Rust. Designed
 ### Five Operating Modes
 | Mode | Purpose | Speed | Best For |
 |------|---------|-------|----------|
-| **Backtest** | Historical simulation | 800-1200 combos/sec | Parameter optimization & strategy development |
+| **Backtest** | Historical simulation | Up to 10,000+ combos/sec | Parameter optimization & strategy development |
 | **Live** | Real-time execution | Sub-millisecond | Production trading with Binance or MT5 |
 | **Walkforward** | Rolling in-sample/out-of-sample validation | Grid search per window | Checking a strategy generalizes before going live |
 | **DiscoverEdge** | Automated end-to-end edge discovery pipeline | Multi-phase, per symbol/timeframe | Scanning a broker's catalog for statistically robust edges |
@@ -575,14 +575,71 @@ EOF
 ## ⚡ Performance
 
 ### Benchmarks
-Measured on a 16-core CPU with Rust release build:
+All benchmarks are measured using the native Rust release build (`--release`) on an 8-thread workstation under Linux:
 
-| Operation | Combinations | Time | Speed |
-|---|---|---|---|
-| Single backtest | 1 | ~15 ms | 67 BT/sec |
-| Grid search (100 combos) | 100 | ~800 ms | 125 BT/sec |
-| Full grid (500 combos) | 500 | ~550 ms | 909 BT/sec |
-| Parallel grid (1000 combos) | 1000 | ~850 ms | 1,176 BT/sec |
+#### Test Environment
+- **Processor**: 11th Gen Intel Core i7-1165G7 @ 2.80GHz (4 physical cores, 8 logical threads, 12 MB L3 cache, boost up to 4.70 GHz)
+- **Memory**: 16 GB RAM
+- **Operating System**: Linux x86_64 (EndeavourOS / Arch Linux, Linux 6.x kernel)
+- **Storage**: NVMe SSD (local Parquet OHLCV caching)
+- **Rust Compiler**: rustc 1.95+
+- **Build Profile**: Release (`opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `panic = "unwind"`)
+- **Strategy**: `ema_cross` (dual EMA crossover with dynamic SL/TP and `variant2` trailing stop manager)
+
+#### Dataset 1: 1-Hour Timeframe (1h, 8,760 Candles / ~1 Year BTCUSDT)
+
+| Scale | Combinations | Groups | Config File | Simulation Time | Throughput | Latency / Combo |
+|---|---|---|---|---|---|---|
+| Single backtest | 1 | 1 | `configs/benchmark/1h/1_combo.json` | ~4.1 ms | ~240 combos/sec | ~4.1 ms |
+| Micro grid | 10 | 1 | `configs/benchmark/1h/10_combos.json` | ~11.3 ms | ~885 combos/sec | ~1.1 ms |
+| Small grid | 100 | 10 | `configs/benchmark/1h/100_combos.json` | ~24.7 ms | ~4,055 combos/sec | ~247 µs |
+| Medium grid (1k) | 1,000 | 50 | `configs/benchmark/1h/1k_combos.json` | ~107 ms | ~9,340 combos/sec | ~107 µs |
+| Large grid (10k) | 10,000 | 400 | `configs/benchmark/1h/10k_combos.json` | ~947 ms | ~10,560 combos/sec | ~95 µs |
+| High-scale grid (100k) | 100,000 | 2,000 | `configs/benchmark/1h/100k_combos.json` | ~9.43 s | ~10,610 combos/sec | ~94 µs |
+
+#### Dataset 2: 5-Minute Timeframe (5m, 105,120 Candles / ~1 Year BTCUSDT)
+
+| Scale | Combinations | Groups | Config File | Simulation Time | Throughput | Latency / Combo |
+|---|---|---|---|---|---|---|
+| Single backtest | 1 | 1 | `configs/benchmark/5m/1_combo.json` | ~27.9 ms | ~36 combos/sec | ~27.9 ms |
+| Micro grid | 10 | 1 | `configs/benchmark/5m/10_combos.json` | ~171 ms | ~58 combos/sec | ~17.1 ms |
+| Small grid | 100 | 10 | `configs/benchmark/5m/100_combos.json` | ~868 ms | ~115 combos/sec | ~8.7 ms |
+| Medium grid (1k) | 1,000 | 50 | `configs/benchmark/5m/1k_combos.json` | ~5.54 s | ~180 combos/sec | ~5.5 ms |
+| Large grid (10k) | 10,000 | 400 | `configs/benchmark/5m/10k_combos.json` | ~61.5 s | ~163 combos/sec | ~6.1 ms |
+| High-scale grid (100k) | 100,000 | 2,000 | `configs/benchmark/5m/100k_combos.json` | ~11m 07s | ~150 combos/sec | ~6.7 ms |
+
+#### Key Performance Characteristics
+
+- **Indicator precomputation**: Technical indicators are computed once per distinct parameter set and stored in memory.
+- **Grouped signal evaluation**: Signal series are computed once per parameter group. Multiple stop-loss, take-profit, and trailing stop variants share these precomputed signals without re-evaluating indicators.
+- **Lock-free parallelism**: Rayon distributes parameter groups across worker threads. Each thread tracks top candidates in its own thread-local bounded `TopNHeap`, merging results only at the end to eliminate lock contention.
+- **Candle throughput at scale**: On the 5-minute dataset with 100,000 combinations, the engine processes 10.51 billion candle simulations in 11 minutes 7 seconds, sustaining a simulation throughput of ~15.7 million candles per second.
+
+#### Reproducing benchmarks
+
+All benchmark configurations are stored in `configs/benchmark/1h/` and `configs/benchmark/5m/`:
+
+```bash
+# 1. Download benchmark datasets (1 year of BTCUSDT 1h and 5m bars)
+./target/release/trading-system tools download -S BTCUSDT -t 1h --from 2024-01-01 --to 2024-12-31 -o data/
+./target/release/trading-system tools download -S BTCUSDT -t 5m --from 2024-01-01 --to 2024-12-31 -o data/
+
+# 2. Run 1-hour benchmarks (8,760 candles)
+./target/release/trading-system backtest --config configs/benchmark/1h/1_combo.json --top 1
+./target/release/trading-system backtest --config configs/benchmark/1h/10_combos.json --top 5
+./target/release/trading-system backtest --config configs/benchmark/1h/100_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/1h/1k_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/1h/10k_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/1h/100k_combos.json --top 10
+
+# 3. Run 5-minute benchmarks (105,120 candles)
+./target/release/trading-system backtest --config configs/benchmark/5m/1_combo.json --top 1
+./target/release/trading-system backtest --config configs/benchmark/5m/10_combos.json --top 5
+./target/release/trading-system backtest --config configs/benchmark/5m/100_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/5m/1k_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/5m/10k_combos.json --top 10
+./target/release/trading-system backtest --config configs/benchmark/5m/100k_combos.json --top 10
+```
 
 ### Optimization Tips
 ```bash

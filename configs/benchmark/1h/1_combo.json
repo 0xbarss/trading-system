@@ -1,0 +1,30 @@
+{
+  "strategy": "ema_cross",
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "stop_timeframe": "timeframe",
+  "pyramiding": true,
+  "data_provider": "binance",
+  "backtest_start": "2024-01-01",
+  "backtest_end": "2024-12-30",
+  "initial_balance": 100000.0,
+  "risk_percentage": 0.001,
+  "commission_percent": 0.000325,
+  "data_dir": "data",
+  "output_dir": "data/results",
+  "stop_manager": {
+    "type": "variant2",
+    "stop_distance": 0.02,
+    "start_rr": 1.0
+  },
+  "strategy_parameters": {
+    "fast_period": 9,
+    "slow_period": 21,
+    "stop_pct": 0.02,
+    "tp_pct": 0.04
+  },
+  "indicators": {
+    "ema_fast": { "type": "ema", "period": 9 },
+    "ema_slow": { "type": "ema", "period": 21 }
+  }
+}
